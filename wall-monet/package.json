@@ -1,0 +1,22 @@
+{
+  "name": "wall-monet",
+  "version": "1.0.0",
+  "description": "Wallpaper-driven Material 3 Expressive (2025 spec) palette generator for a monet-patched dwm",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "bin": {
+    "wall-monet": "bin/wall-monet",
+    "check-palette": "bin/check-palette"
+  },
+  "scripts": {
+    "test": "node --test",
+    "postinstall": "node scripts/fix-mcu-esm.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@material/material-color-utilities": "0.4.0"
+  }
+}

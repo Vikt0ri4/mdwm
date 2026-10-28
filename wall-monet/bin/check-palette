@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+// Ask the only question that matters about a palette file: would the
+// monet-patched dwm accept it? Uses the faithful port of dwm's parsepalette(),
+// so it catches the failures that are otherwise invisible -- a missing required
+// key, a stray space, an 8-character colour, an alpha out of range.
+//
+// usage: check-palette [file]     (reads stdin with no argument or with "-")
+import { readFileSync } from 'node:fs';
+import { ALPHA_KEYS, parseAsDwm, REQUIRED_KEYS } from '../src/dwm-parse.js';
+
+const USAGE = `usage: check-palette [file]
+
+Report whether a wall-monet palette file would be accepted by the
+monet-patched dwm. Reads stdin when no file (or "-") is given.
+
+exit status: 0 dwm would accept, 1 dwm would reject, 2 could not read input
+`;
+
+const argv = process.argv.slice(2);
+if (argv.includes('-h') || argv.includes('--help')) {
+  process.stdout.write(USAGE);
+  process.exit(0);
+}
+
+const target = argv[0];
+let text;
+if (target === undefined || target === '-') {
+  try {
+    text = readFileSync(0, 'utf8');
+  } catch (error) {
+    process.stderr.write(`check-palette: cannot read stdin: ${error.message}\n`);
+    process.exit(2);
+  }
+} else {
+  try {
+    text = readFileSync(target, 'utf8');
+  } catch (error) {
+    process.stderr.write(`check-palette: cannot read ${target}: ${error.message}\n`);
+    process.exit(2);
+  }
+}
+
+const result = parseAsDwm(text);
+
+process.stdout.write(`check-palette: ${target ?? '<stdin>'}\n`);
+process.stdout.write(`required keys:   ${result.foundRequired.length}/${REQUIRED_KEYS.length} present\n`);
+for (const key of REQUIRED_KEYS) {
+  process.stdout.write(`  ${key.padEnd(13)} ${result.colors[key] ?? '(missing or invalid)'}\n`);
+}
+for (const key of ALPHA_KEYS) {
+  process.stdout.write(`  ${key.padEnd(13)} ${result.alphas[key]} (from ${result.alphaSource[key]})\n`);
+}
+const extras = Object.keys(result.extras);
+process.stdout.write(`optional keys:   ${extras.length > 0 ? extras.map((k) => `${k}=${result.extras[k]}`).join(' ') : 'none'}\n`);
+if (result.ignored.length > 0) process.stdout.write(`ignored keys:    ${result.ignored.join(', ')}\n`);
+for (const problem of result.problems) process.stdout.write(`problem:         ${problem}\n`);
+for (const note of result.suspicious) process.stdout.write(`suspicious:      ${note}\n`);
+
+if (result.accepted) {
+  process.stdout.write('verdict:         dwm would ACCEPT this palette\n');
+  process.exit(0);
+}
+process.stdout.write(`verdict:         dwm would REJECT this palette (missing: ${result.missingRequired.join(', ')})\n`);
+process.exit(1);

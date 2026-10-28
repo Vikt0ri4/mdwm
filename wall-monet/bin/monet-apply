@@ -1,0 +1,124 @@
+#!/usr/bin/env node
+// Push the current palette into every running st.
+//
+// st has no Xresources support in this build (no Xrm calls in x.c), but it does
+// implement OSC 4 (palette entry), OSC 10/11/12 (fg/bg/cursor) and calls
+// tfulldirt() afterwards -- so a window can be retinted live, scrollback included,
+// with no rebuild and no restart.
+//
+// The only hard part is finding the terminals: the pty is not reachable from X, so
+// we ask ps which processes are named `st` and write to their ttys. Nothing is
+// guessed: a terminal that is not st is never touched.
+//
+// usage: monet-apply [--dry-run] [--verbose]
+import { spawnSync } from 'node:child_process';
+import { closeSync, openSync, realpathSync, writeSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { palettePath } from '../src/paths.js';
+import { readPaletteValues } from '../src/palette.js';
+import { oscSequences, ST_KEYS } from '../src/st-colors.js';
+import { findStTtys } from '../src/st-terminals.js';
+
+const USAGE = `usage: monet-apply [--dry-run] [--verbose]
+
+Push ${'${MONET_CACHE_DIR:-$HOME/.cache/monet}'}/palette into every running st
+via OSC escape sequences. Terminals are found by asking ps for processes named
+"st" and writing to their ttys, so no unrelated terminal is ever touched.
+
+  --dry-run   list the terminals and the sequences, write nothing
+  --verbose   say what was written
+  -h, --help
+`;
+
+const argv = process.argv.slice(2);
+
+/**
+ * True when this file is the entry point.
+ *
+ * Compared through realpathSync() on purpose: install.sh exposes this tool as a
+ * symlink in ~/.local/bin, and Node resolves import.meta.url to the *real* path
+ * while process.argv[1] keeps the symlink. Comparing the two directly made the
+ * tool exit silently with status 0 when invoked as ~/.local/bin/monet-apply.
+ */
+const isMain = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain && (argv.includes('-h') || argv.includes('--help'))) {
+  process.stdout.write(USAGE);
+  process.exit(0);
+}
+const dryRun = argv.includes('--dry-run');
+const verbose = argv.includes('--verbose');
+if (isMain) {
+  const unknown = argv.filter((a) => !['--dry-run', '--verbose', '-h', '--help'].includes(a));
+  if (unknown.length > 0) {
+    process.stderr.write(`monet-apply: unknown option: ${unknown[0]}\n\n${USAGE}`);
+    process.exit(2);
+  }
+}
+
+
+export function main({ paletteFile = palettePath(), spawn = spawnSync, ps = 'ps', write = true } = {}) {
+  let values;
+  try {
+    values = readPaletteValues(paletteFile);
+  } catch (error) {
+    process.stderr.write(`monet-apply: cannot read ${paletteFile}: ${error.message}\n`);
+    process.stderr.write('monet-apply: run wall-monet first to generate it\n');
+    return 1;
+  }
+  const missing = ST_KEYS.filter((key) => !values[key]);
+  if (missing.length > 0) {
+    process.stderr.write(
+      `monet-apply: ${paletteFile} has no ${missing[0]} — regenerate it with a wall-monet that writes st_* keys\n`,
+    );
+    return 1;
+  }
+
+  const sequence = oscSequences(values);
+  let ttys;
+  try {
+    ttys = findStTtys({ spawn, ps });
+  } catch (error) {
+    process.stderr.write(`monet-apply: cannot list terminals: ${error.message}\n`);
+    return 1;
+  }
+
+  if (ttys.length === 0) {
+    if (verbose) process.stdout.write('monet-apply: no running st found, nothing to do\n');
+    return 0;
+  }
+  if (dryRun || !write) {
+    process.stdout.write(`monet-apply: would write ${sequence.length} bytes to: ${ttys.join(' ')}\n`);
+    return 0;
+  }
+
+  const failed = [];
+  for (const tty of ttys) {
+    try {
+      const fd = openSync(tty, 'w');
+      try {
+        writeSync(fd, sequence);
+      } finally {
+        closeSync(fd);
+      }
+      if (verbose) process.stdout.write(`monet-apply: retinted ${tty}\n`);
+    } catch (error) {
+      failed.push(`${tty}: ${error.message}`);
+    }
+  }
+  if (failed.length > 0) {
+    process.stderr.write(`monet-apply: could not write to ${failed.join(', ')}\n`);
+    return 1;
+  }
+  if (verbose) process.stdout.write(`monet-apply: retinted ${ttys.length} st window(s)\n`);
+  return 0;
+}
+
+if (isMain) process.exit(main());

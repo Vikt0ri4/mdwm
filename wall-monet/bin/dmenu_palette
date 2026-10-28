@@ -1,0 +1,53 @@
+#!/bin/sh
+# dmenu, themed from the wallpaper's Monet palette.
+#
+# This is the rebuilt replacement for the lost ~/.local/bin/dmenu_palette that
+# dwm's config.h calls as:
+#     dmenu_palette -m 0 -fn "monospace:size=11"
+#
+# dmenu 5.4 on this machine does NOT support Xresources (no Xrm calls in the
+# binary), so the colours have to be passed explicitly as -nb/-nf/-sb/-sf.
+#
+# Two modes, decided by what stdin is:
+#   * stdin is a pipe or a regular file  -> act as a filter:  ls | dmenu_palette
+#   * otherwise (a tty, or dwm's /dev/null) -> act as a launcher, like dmenu_run
+set -eu
+
+PALETTE="${MONET_CACHE_DIR:-$HOME/.cache/monet}/palette"
+
+# Compiled-in fallbacks: these are dwm's own config.h colours, so a missing
+# palette makes dmenu look exactly like an unthemed bar rather than something new.
+nb="#2e3440"   # normal background
+nf="#d8dee9"   # normal foreground
+sb="#5e81ac"   # selected background
+sf="#eceff4"   # selected foreground
+
+if [ -r "$PALETTE" ]; then
+  read_key() {
+    sed -n "s/^$1=\(#[0-9a-fA-F]\{6\}\)\$/\1/p" "$PALETTE" | head -n 1
+  }
+  # normal = bar 底色, selected = bar 的状态/选中胶囊;同向、不反色。
+  v=$(read_key norm_bg); [ -n "$v" ] && nb="$v"
+  v=$(read_key norm_fg); [ -n "$v" ] && nf="$v"
+  v=$(read_key tag_sel_bg); [ -n "$v" ] && sb="$v"
+  v=$(read_key tag_sel_fg); [ -n "$v" ] && sf="$v"
+fi
+
+if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then
+  # Filter mode: whatever was piped in is the candidate list.
+  exec dmenu -nb "$nb" -nf "$nf" -sb "$sb" -sf "$sf" "$@"
+fi
+
+# Launcher mode. dmenu_path keeps a cache of $PATH; fall back to a plain scan if
+# it is not installed.
+if command -v dmenu_path >/dev/null 2>&1; then
+  candidates=$(dmenu_path)
+else
+  candidates=$(
+    printf '%s' "${PATH:-/usr/bin:/bin}" | tr ':' '\n' | while IFS= read -r dir; do
+      [ -d "$dir" ] && ls "$dir" 2>/dev/null
+    done | sort -u
+  )
+fi
+
+printf '%s\n' "$candidates" | dmenu -nb "$nb" -nf "$nf" -sb "$sb" -sf "$sf" "$@" | ${SHELL:-/bin/sh} &

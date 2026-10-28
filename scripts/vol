@@ -1,0 +1,131 @@
+#!/bin/sh
+# vol - control the default sink on PipeWire (wpctl/pactl) or ALSA (amixer).
+#
+#   vol get        print 0-100, or 0 when muted
+#   vol set N      set absolute volume (0-100)
+#   vol up N       raise by N (default 5); unmutes first if muted
+#   vol down N     lower by N (default 5)
+#   vol mute       toggle mute
+#   vol toggle     toggle mute
+#
+# Backend: wpctl > pactl > amixer; VOL_BACKEND forces one.
+set -eu
+
+usage() {
+	echo "usage: vol {get|set N|up N|down N|mute|toggle}" >&2
+	exit 2
+}
+
+backend() {
+	if [ -n "${VOL_BACKEND:-}" ]; then
+		echo "$VOL_BACKEND"
+		return
+	fi
+	if command -v amixer >/dev/null 2>&1; then
+		echo alsa
+	elif command -v wpctl >/dev/null 2>&1; then
+		echo pipewire
+	elif command -v pactl >/dev/null 2>&1; then
+		echo pulse
+	else
+		echo none
+	fi
+}
+
+get_raw() {
+	case "$(backend)" in
+	pipewire)
+		wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null |
+			awk '{ printf "%d", $2 * 100 }'
+		;;
+	pulse)
+		pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null |
+			grep -o '[0-9]\+%' | head -1 | tr -d '%'
+		;;
+	alsa)
+		amixer get Master 2>/dev/null |
+			grep -o '[0-9]\+%' | head -1 | tr -d '%'
+		;;
+	*) echo 0 ;;
+	esac
+}
+
+is_mute() {
+	case "$(backend)" in
+	pipewire) wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | grep -q MUTED ;;
+	pulse) pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | grep -q 'yes' ;;
+	alsa) amixer get Master 2>/dev/null | grep -q '\[off\]' ;;
+	*) return 1 ;;
+	esac
+}
+
+step_rel() {
+	case "$(backend)" in
+	alsa) amixer sset Master "$1%$2" >/dev/null ;;
+	pipewire) wpctl set-volume @DEFAULT_AUDIO_SINK@ "$1%$2" ;;
+	pulse) pactl set-sink-volume @DEFAULT_SINK@ "$1%$2" ;;
+	esac
+}
+
+set_raw() {
+	case "$(backend)" in
+	pipewire) wpctl set-volume @DEFAULT_AUDIO_SINK@ "$1%" ;;
+	pulse) pactl set-sink-volume @DEFAULT_SINK@ "$1%" ;;
+	alsa) amixer sset Master "$1%" >/dev/null ;;
+	esac
+}
+
+unmute() {
+	case "$(backend)" in
+	pipewire) wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 ;;
+	pulse) pactl set-sink-mute @DEFAULT_SINK@ 0 ;;
+	alsa) amixer sset Master unmute >/dev/null ;;
+	esac
+}
+
+toggle_mute() {
+	case "$(backend)" in
+	pipewire) wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle ;;
+	pulse) pactl set-sink-mute @DEFAULT_SINK@ toggle ;;
+	alsa) amixer sset Master toggle >/dev/null ;;
+	esac
+}
+
+clamp() {
+	if [ "$1" -lt 0 ]; then
+		echo 0
+	elif [ "$1" -gt 100 ]; then
+		echo 100
+	else
+		echo "$1"
+	fi
+}
+
+cmd=${1:-get}
+case "$cmd" in
+get)
+	if is_mute; then echo 0; else get_raw; fi
+	;;
+set)
+	[ $# -eq 2 ] || usage
+	set_raw "$(clamp "$2")"
+	;;
+up)
+	n=${2:-5}
+	if is_mute; then
+		unmute
+	else
+		step_rel "$n" +
+	fi
+	;;
+down)
+	n=${2:-5}
+	step_rel "$n" -
+	;;
+mute|toggle)
+	toggle_mute
+	;;
+*)
+	usage
+	;;
+esac
